@@ -1,8 +1,19 @@
 import tkinter as tk
+import requests
+import json
 from tkinter import messagebox, simpledialog
-from ..auth.login import login_user, verify_otp
-from ..auth.register import register_user
-from ..db import users_collection;
+from src.auth.login import login_user, verify_otp
+from src.auth.register import register_user
+from src.db import users_collection  # Adjusted path for users_collection
+
+import os
+import urllib3
+
+
+
+# Assuming secure server endpoint is available at https://localhost:5000
+SECURE_SERVER_URL = "https://localhost:5000"
+
 class LoginApp:
     def __init__(self, master):
         self.master = master
@@ -52,41 +63,81 @@ class LoginApp:
 
 
     def show_profile(self, username):
-        # Fetch user details from MongoDB
         user = users_collection.find_one({"username": username})
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-        profile_window = tk.Toplevel(self.master)
-        profile_window.title("Profile")
-        profile_window.geometry("300x200")
-           # Fallback to username if 'name' is not present in the document
-        
-        
-        name = user.get('name', username)
 
-        name_label = tk.Label(profile_window, text=f"Name: {name}")
-        name_label.pack()
 
-        balance_label = tk.Label(profile_window, text=f"Balance: {user.get('balance', 0.0)}")
-        balance_label.pack()
+        BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        CERT_DIR = os.path.join(BASE_DIR, 'src', 'certificates')
 
-        new_balance_label = tk.Label(profile_window, text="Update Balance:")
-        new_balance_label.pack()
+    # Prepare headers for authorization
+        headers = {
+        'Authorization': f'Bearer {user["jwt"]}',
+        'X-API-Key': user['api_key']
+        }
+        try:
+                    # Get absolute paths for certificates
+            client_cert = os.path.join(CERT_DIR, 'client.pem')
+            client_key = os.path.join(CERT_DIR, 'client.key')
+            server_cert = os.path.join(CERT_DIR, 'rootCA.pem')
+        # HTTPS request with mTLS using the client certificate and key
+            
+            response = requests.get(
+                f"{SECURE_SERVER_URL}/profile",
+                headers=headers,
+                cert=(client_cert, client_key),
+                verify=server_cert
+            )
 
-        new_balance_entry = tk.Entry(profile_window)
-        new_balance_entry.pack()
-        def update_balance():
-            try:
-                new_balance = float(new_balance_entry.get())
-                users_collection.update_one(
-                    {"username": username}, {"$set": {"balance": new_balance}}
-                )
-                messagebox.showinfo("Update Success", "Balance updated successfully!")
-                balance_label.config(text=f"Balance: {new_balance}")
-            except ValueError:
-                messagebox.showerror("Invalid Input", "Please enter a valid balance.")
+            if response.status_code == 200:
+                profile_data = response.json()
+                # Use the response data to display profile information
+                profile_window = tk.Toplevel(self.master)
+                profile_window.title("Profile")
+                profile_window.geometry("300x200")
 
-        update_button = tk.Button(profile_window, text="Update Balance", command=update_balance)
-        update_button.pack()
+                name = profile_data.get('name', username)
+                name_label = tk.Label(profile_window, text=f"Name: {name}")
+                name_label.pack()
+    
+                balance_label = tk.Label(profile_window, text=f"Balance: {profile_data.get('balance', 0.0)}")
+                balance_label.pack()
+    
+                # Update Balance section
+                new_balance_label = tk.Label(profile_window, text="Update Balance:")
+                new_balance_label.pack()
+    
+                new_balance_entry = tk.Entry(profile_window)
+                new_balance_entry.pack()
+
+                def update_balance():
+                    try:
+                        new_balance = float(new_balance_entry.get())
+                        # Prepare data for updating balance
+                        data = {'balance': new_balance}
+                        update_response = requests.put(
+                            f"{SECURE_SERVER_URL}/profile/balance",
+                            headers=headers,
+                            json=data,
+                            cert=(client_cert, client_key),
+                            verify=server_cert
+                        )
+                        if update_response.status_code == 200:
+                            messagebox.showinfo("Update Success", "Balance updated successfully!")
+                            balance_label.config(text=f"Balance: {new_balance}")
+                        else:
+                            messagebox.showerror("Update Failed", "Failed to update balance.")
+                    except ValueError:
+                        messagebox.showerror("Invalid Input", "Please enter a valid balance.")
+
+                update_button = tk.Button(profile_window, text="Update Balance", command=update_balance)
+                update_button.pack()
+
+            else:
+                messagebox.showerror("Authorization Failed", "Unauthorized access to profile data.")
+        except requests.exceptions.RequestException as e:
+            messagebox.showerror("Connection Error", f"Failed to connect to the server: {e}")
 
 
     def open_signup_window(self):
